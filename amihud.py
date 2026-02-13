@@ -1,11 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from datetime import datetime, timedelta
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 import math
-from set_split import set_split
 
 def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
 
@@ -24,8 +20,7 @@ def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
 
     if clean:
         return result.dropna()
-    else:
-        return
+    return result
 
 
 
@@ -85,31 +80,31 @@ def calculate_illiq(ticker, start_date, end_date, DIX):
 
     return monthly_data
 
-    # Функция для расчета ILLIQ для нескольких тикеров
-    def calculate_illiq_multiple(tickers, start_date, end_date, DIX):
-        """
-        Расчет ILLIQ для нескольких тикеров
-        
-        Parameters:
-        tickers (list): Список тикеров
-        start_date (str): Начальная дата
-        end_date (str): Конечная дата
-        
-        Returns:
-        DataFrame: Данные с расчетом ILLIQ для всех тикеров
-        """
-        all_data = []
-        
-        for ticker in tickers:
-            print(f"Обрабатывается {ticker}...")
-            data = calculate_illiq(ticker, start_date, end_date,DIX)
-            if not data.empty:
-                all_data.append(data)
-        
-        if all_data:
-            return pd.concat(all_data, ignore_index=True)
-        else:
-            return pd.DataFrame()
+
+# Функция для расчета ILLIQ для нескольких тикеров
+def calculate_illiq_multiple(tickers, start_date, end_date, DIX):
+    """
+    Расчет ILLIQ для нескольких тикеров
+
+    Parameters:
+    tickers (list): Список тикеров
+    start_date (str): Начальная дата
+    end_date (str): Конечная дата
+
+    Returns:
+    DataFrame: Данные с расчетом ILLIQ для всех тикеров
+    """
+    all_data = []
+
+    for ticker in tickers:
+        print(f"Обрабатывается {ticker}...")
+        data = calculate_illiq(ticker, start_date, end_date, DIX)
+        if not data.empty:
+            all_data.append(data)
+
+    if all_data:
+        return pd.concat(all_data, ignore_index=True)
+    return pd.DataFrame()
 
 
 
@@ -120,13 +115,10 @@ def Draw(tick,start_date = '2024-01-01'):
         import yfinance as yf
         import pandas as pd
         import numpy as np
-        from datetime import datetime, timedelta
         from plotly.subplots import make_subplots
         import plotly.graph_objects as go
         import math
         from set_split import set_split
-        from scipy import stats
-        from scipy.signal import medfilt
         from scipy.ndimage import uniform_filter1d    
         from filter_outliers import filter_outliers
         def rank_iv(data):
@@ -153,25 +145,6 @@ def Draw(tick,start_date = '2024-01-01'):
             )
             return data
 
-        def outliers(original,window = 11):
-
-            smoothed = medfilt(original, kernel_size=window)
-            
-            # 2. Считаем остатки
-            residuals = original - smoothed
-        
-            mad = np.median(np.abs(residuals - np.median(residuals)))
-            threshold = 3 * 1.4826 * mad  # 1.4826 — поправочный коэффициент для нормального распределения
-            
-
-            outlier_mask = np.abs(residuals) > threshold
-            
-            original.loc[outlier_mask] = np.nan
-            
-
-            # original = original.interpolate(method='linear', limit_direction='both')
-            return original
-
 
         def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
             log_return = (price_data["Close"] / price_data["Close"].shift(1)).apply(np.log)
@@ -189,8 +162,7 @@ def Draw(tick,start_date = '2024-01-01'):
         
             if clean:
                 return result.dropna()
-            else:
-                return
+            return result
         
     # try:
         if tick == 'SPX':
@@ -201,11 +173,6 @@ def Draw(tick,start_date = '2024-01-01'):
             tick2 = '^VIX'
         
             
-        # Определение параметров
-        tickers = [tick2]  # Список тикеров
-        
-        end_date = '2025-09-13'
-        
         try:
             loaded_DIX =pd.read_csv("C://Users//maksut//Dropbox//Market_stats//FINRA//"+tick+".csv",index_col=0)
         except:
