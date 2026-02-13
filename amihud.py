@@ -1,12 +1,16 @@
-import yfinance as yf
-import pandas as pd
-import numpy as np
-from datetime import datetime, timedelta
-from plotly.subplots import make_subplots
-import plotly.graph_objects as go
 import math
-from set_split import set_split
+import os
 
+import multiprocess as mp
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import yfinance as yf
+from plotly.subplots import make_subplots
+from scipy.ndimage import uniform_filter1d
+
+from filter_outliers import filter_outliers
+from set_split import set_split
 def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
 
     log_return = (price_data["Close"] / price_data["Close"].shift(1)).apply(np.log)
@@ -24,8 +28,7 @@ def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
 
     if clean:
         return result.dropna()
-    else:
-        return
+    return result
 
 
 
@@ -85,113 +88,91 @@ def calculate_illiq(ticker, start_date, end_date, DIX):
 
     return monthly_data
 
-    # Функция для расчета ILLIQ для нескольких тикеров
-    def calculate_illiq_multiple(tickers, start_date, end_date, DIX):
-        """
-        Расчет ILLIQ для нескольких тикеров
-        
-        Parameters:
-        tickers (list): Список тикеров
-        start_date (str): Начальная дата
-        end_date (str): Конечная дата
-        
-        Returns:
-        DataFrame: Данные с расчетом ILLIQ для всех тикеров
-        """
-        all_data = []
-        
-        for ticker in tickers:
-            print(f"Обрабатывается {ticker}...")
-            data = calculate_illiq(ticker, start_date, end_date,DIX)
-            if not data.empty:
-                all_data.append(data)
-        
-        if all_data:
-            return pd.concat(all_data, ignore_index=True)
-        else:
-            return pd.DataFrame()
+
+# Функция для расчета ILLIQ для нескольких тикеров
+def calculate_illiq_multiple(tickers, start_date, end_date, DIX):
+    """
+    Расчет ILLIQ для нескольких тикеров
+
+    Parameters:
+    tickers (list): Список тикеров
+    start_date (str): Начальная дата
+    end_date (str): Конечная дата
+
+    Returns:
+    DataFrame: Данные с расчетом ILLIQ для всех тикеров
+    """
+    all_data = []
+
+    for ticker in tickers:
+        print(f"Обрабатывается {ticker}...")
+        data = calculate_illiq(ticker, start_date, end_date, DIX)
+        if not data.empty:
+            all_data.append(data)
+
+    if all_data:
+        return pd.concat(all_data, ignore_index=True)
+    return pd.DataFrame()
 
 
 
     
 
+def rank_iv(data, window=252):
+    data['min_iv'] = data['vix'].rolling(window=window, min_periods=1).min()
+    data['max_iv'] = data['vix'].rolling(window=window, min_periods=1).max()
+    data['iv_rank'] = (data['vix'] - data['min_iv']) / (data['max_iv'] - data['min_iv']) * 100
+    data['iv_rank'] = data['iv_rank'].clip(0, 100)
 
-def Draw(tick,start_date = '2024-01-01'):    
-        import yfinance as yf
-        import pandas as pd
-        import numpy as np
-        from datetime import datetime, timedelta
-        from plotly.subplots import make_subplots
-        import plotly.graph_objects as go
-        import math
-        from set_split import set_split
-        from scipy import stats
-        from scipy.signal import medfilt
-        from scipy.ndimage import uniform_filter1d    
-        from filter_outliers import filter_outliers
-        def rank_iv(data):
-            window = 252
-            
-            # Расчет минимального и максимального IV за период
-            data['min_iv'] = data['vix'].rolling(window=window, min_periods=1).min()
-            data['max_iv'] = data['vix'].rolling(window=window, min_periods=1).max()
-            # Расчет IV Rank
-            data['iv_rank'] = (data['vix'] - data['min_iv']) / (data['max_iv'] - data['min_iv']) * 100
-            data['iv_rank'] = data['iv_rank'].clip(0, 100)
+    def calculate_iv_percentile(series):
+        if len(series) < window:
+            return np.nan
+        current_iv = series.iloc[-1]
+        historical_iv = series.iloc[:-1]
+        count_below = (historical_iv < current_iv).sum()
+        return (count_below / len(historical_iv)) * 100
 
-            # IV Percentile
-            def calculate_iv_percentile(series):
-                if len(series) < window:
-                    return np.nan
-                current_iv = series.iloc[-1]
-                historical_iv = series.iloc[:-1]
-                count_below = (historical_iv < current_iv).sum()
-                return (count_below / len(historical_iv)) * 100
-            
-            data['iv_percentile'] = data['vix'].ffill().rolling(window=window + 1, min_periods=window + 1).apply(
-                calculate_iv_percentile, raw=False
-            )
-            return data
-
-        def outliers(original,window = 11):
-
-            smoothed = medfilt(original, kernel_size=window)
-            
-            # 2. Считаем остатки
-            residuals = original - smoothed
-        
-            mad = np.median(np.abs(residuals - np.median(residuals)))
-            threshold = 3 * 1.4826 * mad  # 1.4826 — поправочный коэффициент для нормального распределения
-            
-
-            outlier_mask = np.abs(residuals) > threshold
-            
-            original.loc[outlier_mask] = np.nan
-            
-
-            # original = original.interpolate(method='linear', limit_direction='both')
-            return original
+    data['iv_percentile'] = data['vix'].ffill().rolling(window=window + 1, min_periods=window + 1).apply(
+        calculate_iv_percentile,
+        raw=False,
+    )
+    return data
 
 
-        def hodges_tompkins(price_data, window=20, trading_periods=252, clean=True):
-            log_return = (price_data["Close"] / price_data["Close"].shift(1)).apply(np.log)
-        
-            vol = log_return.rolling(window=window, center=False).std() * math.sqrt(
-                trading_periods
-            )
-        
-            h = window
-            n = (log_return.count() - h) + 1
-        
-            adj_factor = 1.0 / (1.0 - (h / n) + ((h ** 2 - 1) / (3 * n ** 2)))
-        
-            result = vol * adj_factor
-        
-            if clean:
-                return result.dropna()
-            else:
-                return
-        
+def load_ticker_market_data(path, tick, start_date, date_col='date', date_format='%d %b %Y'):
+    df = pd.read_csv(path, index_col=0)
+    df = df.loc[df['tiker'] == tick]
+    df[date_col] = pd.to_datetime(df[date_col], format=date_format)
+    df.index = df[date_col]
+    df = df[~df.index.duplicated()]
+    return df.iloc[df.index > start_date]
+
+
+def apply_figure_ranges(fig, stock, start_date, max_xaxis=17, max_yaxis=22):
+    last_date = stock.index.tolist()[-1]
+    xaxis_updates = {f'xaxis{idx if idx > 1 else ""}': dict(range=[start_date, last_date]) for idx in range(1, max_xaxis + 1)}
+    yaxis_updates = {f'yaxis{idx}': dict(zerolinecolor='black') for idx in range(2, max_yaxis + 1)}
+    fig.update_layout(xaxis_rangeslider_visible=False, **xaxis_updates, **yaxis_updates)
+
+
+def build_suffix(ultraverse_df, temp_sig_z, speed, vanna_low, hard_sig):
+    checks = [
+        ((ultraverse_df['ultraverse'].iloc[-10:] > 0).any(), '_CYAN_'),
+        ((ultraverse_df['ultraverse8'].iloc[-10:] > 0).any(), '_CYAN_'),
+        ((ultraverse_df['ultraverse_3'].iloc[-10:] > 0).any(), '_BLUE_'),
+        ((ultraverse_df['ultraverse_4'].iloc[-10:] > 0).any(), '_PURPLE_'),
+        ((temp_sig_z['z_sig'].iloc[-10:] > 0).any(), '_RED_'),
+        ((ultraverse_df['ultraverse7'].iloc[-10:] > 0).any(), '_CRIMSON_'),
+        (((speed['calls'].ffill() > -speed['puts'].ffill()).iloc[-10:] > 0).any(), '_SPEED_GREEN_'),
+        (((-(vanna_low['calls'] + vanna_low['puts'])/(vanna_low['calls'].abs() + vanna_low['puts'].abs())).iloc[-10:] < -0.8).any(), '_LOW_VANNA_'),
+        ((hard_sig['hard_sig'].iloc[-10:] > 0.8).any(), '_hard_sig+++_'),
+        ((hard_sig['hard_sig++++'].iloc[-10:] > 0.8).any(), '_hard_sig++++++++++++++++++_'),
+    ]
+    return ''.join(tag for matched, tag in checks if matched)
+
+
+
+def Draw(tick,start_date = '2024-01-01'):
     # try:
         if tick == 'SPX':
             tick2 = '^SPX'
@@ -201,11 +182,6 @@ def Draw(tick,start_date = '2024-01-01'):
             tick2 = '^VIX'
         
             
-        # Определение параметров
-        tickers = [tick2]  # Список тикеров
-        
-        end_date = '2025-09-13'
-        
         try:
             loaded_DIX =pd.read_csv("C://Users//maksut//Dropbox//Market_stats//FINRA//"+tick+".csv",index_col=0)
         except:
@@ -223,112 +199,67 @@ def Draw(tick,start_date = '2024-01-01'):
         sell_vol = loaded_DIX['2'].rolling(30, min_periods=1).sum()
         # dix = loaded_DIX['2'] / loaded_DIX['4']*100
         # dixB = (loaded_DIX['4'].ffill() - loaded_DIX['2']) / loaded_DIX['4']*100
-        def converting(df,tick,start_date):
-                df = df.loc[df['tiker'] == tick]
-                df["date"]=pd.to_datetime(df["date"],format='%d %b %Y')
-                df.index = df["date"]
-                df = df[~df.index.duplicated()]
-                df = df.iloc[df.index > start_date]
-                return df
-        
-        gamma_low = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\gamma_low_orig_range_summ_result_test_all.csv',index_col=0)
-        gamma_low = converting(gamma_low,tick,start_date)
+        market_files = {
+            'gamma_low': r'C:\Users\maksut\Dropbox\Market_stats\gamma_low_orig_range_summ_result_test_all.csv',
+            'vanna_low': r'C:\Users\maksut\Dropbox\Market_stats\vanna_low_orig_range_summ_result_test_all.csv',
+            'vanna_low2': r'C:\Users\maksut\Dropbox\Market_stats\gamma2_summ_result.csv',
+            'gamma2_low': r'C:\Users\maksut\Dropbox\Market_stats\gamma_summ_result.csv',
+            'gamma3_low': r'C:\Users\maksut\Dropbox\Market_stats\charm_range_summ_result_test.csv',
+            'charm': r'C:\Users\maksut\Dropbox\Market_stats\charm3_range_summ_result_test.csv',
+            'delta': r'C:\Users\maksut\Dropbox\Market_stats\delta2_range_summ_result_test.csv',
+            'color': r'C:\Users\maksut\Dropbox\Market_stats\color_range_summ_result_test4.csv',
+            'vanna_summ_': r'C:\Users\maksut\Dropbox\Market_stats\vanna2b_range_summ_result_test.csv',
+            'zomma': r'C:\Users\maksut\Dropbox\Market_stats\zomma_range_summ_result_orig.csv',
+            'vomma': r'C:\Users\maksut\Dropbox\Market_stats\vomma_original_range_summ_result_test.csv',
+            'speed60': r'C:\Users\maksut\Dropbox\Market_stats\speed_range_summ_result_test30.csv',
+            'speed': r'C:\Users\maksut\Dropbox\Market_stats\speed_range_summ_result_test.csv',
+            'ultima': r'C:\Users\maksut\Dropbox\Market_stats\ultima_range_summ_result_test.csv',
+        }
+        market_data = {
+            name: load_ticker_market_data(path, tick, start_date)
+            for name, path in market_files.items()
+        }
 
-        vanna_low = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\vanna_low_orig_range_summ_result_test_all.csv',index_col=0)#
-        vanna_low = converting(vanna_low,tick,start_date)
-   
-        vanna_low2 = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\gamma2_summ_result.csv',index_col=0)#
-        vanna_low2 = converting(vanna_low2,tick,start_date)
+        gamma_low = market_data['gamma_low']
+        vanna_low = market_data['vanna_low']
+        vanna_low2 = market_data['vanna_low2']
+        gamma2_low = market_data['gamma2_low']
+        gamma3_low = market_data['gamma3_low']
+        charm = market_data['charm']
+        delta = market_data['delta']
+        color = market_data['color']
+        vanna_summ_ = market_data['vanna_summ_']
+        zomma = market_data['zomma']
+        vomma = market_data['vomma']
+        speed60 = market_data['speed60']
+        speed = market_data['speed']
+        ultima = market_data['ultima']
 
-        gamma2_low = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\gamma_summ_result.csv',index_col=0) #gamma_summ_result.csv,gamma2_summ_result.csv
-        gamma2_low = converting(gamma2_low,tick,start_date)
-    
-        gamma3_low = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\charm_range_summ_result_test.csv',index_col=0)
-        gamma3_low = converting(gamma3_low,tick,start_date)
-    
-        charm = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\charm3_range_summ_result_test.csv',index_col=0)
-        charm = converting(charm,tick,start_date)
-
-        delta = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\delta2_range_summ_result_test.csv',index_col=0)
-        delta = converting(delta,tick,start_date)      
-
-        gamma_range=pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\gamma2_range_summ_result_test.csv',index_col=0)
-        gamma_range = gamma_range.loc[gamma_range['tiker'] == tick]
-        gamma_range["date"]=pd.to_datetime(gamma_range["date"],format='%d %b %Y')
-        gamma_range.index = gamma_range["date"]
-        gamma_range = gamma_range[~gamma_range.index.duplicated()]
+        gamma_range = load_ticker_market_data(
+            r'C:\Users\maksut\Dropbox\Market_stats\gamma2_range_summ_result_test.csv',
+            tick,
+            '2019-01-01',
+        )
         gamma_range['calls'] = gamma_range['calls'].bfill().ffill()
         gamma_range['puts'] = gamma_range['puts'].bfill().ffill()
-        gamma_range = gamma_range.iloc[gamma_range.index > '2019-01-01']
-      
-        color = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\color_range_summ_result_test4.csv',index_col=0)
-        color = color.loc[color['tiker'] == tick]
-        color["date"]=pd.to_datetime(color["date"],format='%d %b %Y')
-        color.index = color["date"]
-        color = color[~color.index.duplicated()]           
-        color = color.iloc[color.index > start_date]      
 
-
-
-        # vntest = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\test_of_test.csv',index_col=0)
-        # vntest = vntest.loc[vntest['ticker'] == tick]
-        # vntest["date"]=pd.to_datetime(vntest["date"],format='mixed')
-        # vntest.index = vntest["date"]
-
-
-        vix = pd.read_csv(r'C:\Users\maksut\Dropbox\Market_stats\vix_result.csv',index_col=0)
-        vix = vix.loc[vix['tiker'] == tick]
-        vix["gamma_date"]=pd.to_datetime(vix["gamma_date"],format='%d %b %Y')
-        vix.index = vix["gamma_date"]
-        # vix = vix.iloc[vix.index > start_date]
+        vix = load_ticker_market_data(
+            r'C:\Users\maksut\Dropbox\Market_stats\vix_result.csv',
+            tick,
+            '1900-01-01',
+            date_col='gamma_date',
+        )
         vix = rank_iv(vix)
-    
-        vanna_summ_ = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\vanna2b_range_summ_result_test.csv',index_col=0)
-        vanna_summ_ = converting(vanna_summ_,tick,start_date)   
-    
-        zomma = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\zomma_range_summ_result_orig.csv',index_col=0)
-        zomma = zomma.loc[zomma['tiker'] == tick]
-        zomma["date"]=pd.to_datetime(zomma["date"],format='%d %b %Y')
-        zomma.index = zomma["date"]
-        zomma = zomma[~zomma.index.duplicated()]           
-        zomma = filter_outliers(zomma, 'calls', method = 'iqr',mode = 'remove_strong')
-        zomma = filter_outliers(zomma, 'puts', method = 'iqr',mode = 'remove_strong')
 
+        zomma = filter_outliers(zomma, 'calls', method='iqr', mode='remove_strong')
+        zomma = filter_outliers(zomma, 'puts', method='iqr', mode='remove_strong')
 
-        zomma = zomma.iloc[zomma.index > start_date]
+        for frame in (speed60, speed):
+            frame['puts'] = frame['puts'].bfill()
+            frame['calls'] = frame['calls'].bfill()
+            frame['puts'] = uniform_filter1d(frame['puts'], size=3)
+            frame['calls'] = uniform_filter1d(frame['calls'], size=3)
 
-        vomma = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\vomma_original_range_summ_result_test.csv',index_col=0)
-        vomma = vomma.loc[vomma['tiker'] == tick]
-        vomma["date"]=pd.to_datetime(vomma["date"],format='%d %b %Y')
-        vomma.index = vomma["date"]
-        vomma = vomma[~vomma.index.duplicated()]           
-        vomma = vomma.iloc[vomma.index > start_date]
-
-        speed60 = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\speed_range_summ_result_test30.csv',index_col=0)
-        speed60 = speed60.loc[speed60['tiker'] == tick]
-        speed60["date"]=pd.to_datetime(speed60["date"],format='%d %b %Y')
-        speed60.index = speed60["date"]
-        speed60 = speed60[~speed60.index.duplicated()]
-        speed60['puts'] = speed60['puts'].bfill()
-        speed60['calls'] = speed60['calls'].bfill()
-        speed60['puts'] = uniform_filter1d(speed60['puts'],size=3) 
-        speed60['calls'] = uniform_filter1d(speed60['calls'],size=3) 
-
-    
-        speed = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\speed_range_summ_result_test.csv',index_col=0)
-        speed = speed.loc[speed['tiker'] == tick]
-        speed["date"]=pd.to_datetime(speed["date"],format='%d %b %Y')
-        speed.index = speed["date"]
-        speed = speed[~speed.index.duplicated()]
-        speed['puts'] = speed['puts'].bfill()
-        speed['calls'] = speed['calls'].bfill()
-        speed['puts'] = uniform_filter1d(speed['puts'],size=3) 
-        speed['calls'] = uniform_filter1d(speed['calls'],size=3) 
-        # speed['puts'] = speed['puts'] . loc[speed['puts'] > speed['puts'].quantile(0.09)*6]
-        # speed['puts'] = speed['puts'] . loc[speed['puts'] < speed['puts'].quantile(0.9)*-8 ]
-        # speed['calls'] = speed['calls'] . loc[speed['calls'] < speed['calls'].quantile(0.9)*6]
-        # speed['calls'] = speed['calls'] . loc[speed['calls'] > speed['calls'].quantile(0.09)*6]    
-        speed = speed.iloc[speed.index > start_date]
 
         try:
             vb2_sig_conc = pd.read_csv(r'C:\\Users\\maksut\\Downloads\\signals\\'+ tick +"_vb2_sig.csv",index_col=0)   
@@ -353,12 +284,6 @@ def Draw(tick,start_date = '2024-01-01'):
 
     
     
-        ultima = pd.read_csv(r'C:\\Users\\maksut\\Dropbox\\Market_stats\\ultima_range_summ_result_test.csv',index_col=0)#ultima_all  ultima_range_summ_result_test
-        ultima = ultima.loc[ultima['tiker'] == tick]
-        ultima["date"]=pd.to_datetime(ultima["date"],format='%d %b %Y')
-        ultima.index = ultima["date"]
-        ultima = ultima[~ultima.index.duplicated()]
-        ultima = ultima.iloc[ultima.index > start_date]
  
         
         stock = yf.download(tick2, start=start_date, progress=False)
@@ -694,47 +619,7 @@ def Draw(tick,start_date = '2024-01-01'):
                          yaxis2=dict(zerolinecolor="black"),
                           yaxis3=dict(zerolinecolor="black"),
                          )
-        cut = start_date
-        fig.update_layout(xaxis = dict(range=[cut, stock.index.tolist()[-1]]),
-                      xaxis2 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis3 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis4 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis5 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis6 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis7 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis8 = dict(range=[cut, stock.index.tolist()[-1]]),
-                    xaxis9 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis10 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis11 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis12 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis13 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis14 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis15 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis16 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis17 = dict(range=[cut, stock.index.tolist()[-1]]),
-                     xaxis_rangeslider_visible=False,
-                     yaxis2=dict(zerolinecolor="black"),
-                     yaxis3=dict(zerolinecolor="black"),
-                     yaxis4=dict(zerolinecolor="black"),
-                     yaxis6=dict(zerolinecolor="black"),
-                     yaxis5=dict(zerolinecolor="black"),
-                     yaxis7=dict(zerolinecolor="black"),
-                     yaxis8=dict(zerolinecolor="black"),
-                      yaxis9=dict(zerolinecolor="black"),
-                      yaxis10=dict(zerolinecolor="black"),
-                      yaxis11=dict(zerolinecolor="black"),
-                      yaxis12=dict(zerolinecolor="black"),
-                      yaxis13=dict(zerolinecolor="black"),
-                      yaxis14=dict(zerolinecolor="black"),
-                      yaxis15=dict(zerolinecolor="black"),
-                      yaxis16=dict(zerolinecolor="black"),
-                      yaxis17=dict(zerolinecolor="black"),
-                      yaxis18=dict(zerolinecolor="black"),
-                      yaxis19=dict(zerolinecolor="black"),
-                      yaxis20=dict(zerolinecolor="black"),
-                      yaxis21=dict(zerolinecolor="black"),
-                      yaxis22=dict(zerolinecolor="black"),
-                         )
+        apply_figure_ranges(fig, stock, start_date)
 
 
         fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
@@ -742,28 +627,8 @@ def Draw(tick,start_date = '2024-01-01'):
         fig.update_layout({"barmode":"stack"},bargroupgap = 0,bargap=0)
 
         # fig.show()
-        suf = []
-        if (ultraverse_df['ultraverse'].iloc[-10:] > 0).any():
-            suf.append('_CYAN_')
-        if (ultraverse_df['ultraverse8'].iloc[-10:] > 0).any():
-            suf.append('_CYAN_')
-        if (ultraverse_df['ultraverse_3'].iloc[-10:] > 0).any():
-            suf.append('_BLUE_')
-        if (ultraverse_df['ultraverse_4'].iloc[-10:] > 0).any():
-            suf.append('_PURPLE_')
-        if (temp_sig_z['z_sig'].iloc[-10:] > 0).any():
-            suf.append('_RED_')
-        if (ultraverse_df['ultraverse7'].iloc[-10:] > 0).any():
-            suf.append('_CRIMSON_')
-        if ((speed['calls'].ffill() > -speed['puts'].ffill()).iloc[-10:] > 0).any():
-            suf.append('_SPEED_GREEN_')
-        if ((-(vanna_low['calls'] + vanna_low['puts'])/(vanna_low['calls'].abs() + vanna_low['puts'].abs())).iloc[-10:] < -0.8).any():
-            suf.append('_LOW_VANNA_')
-        if (hard_sig['hard_sig'].iloc[-10:] > 0.8).any():
-            suf.append('_hard_sig+++_')
-        if (hard_sig['hard_sig++++'].iloc[-10:] > 0.8).any():
-            suf.append('_hard_sig++++++++++++++++++_')
-        fig.write_image("F:/illiq/" + "".join(suf)  + tick  + '_' + '.png',engine='kaleido',width=2300, height=1900)
+        suffix = build_suffix(ultraverse_df, temp_sig_z, speed, vanna_low, hard_sig)
+        fig.write_image("F:/illiq/" + suffix + tick + '_' + '.png', engine='kaleido', width=2300, height=1900)
 
     # except:
     #     pass
@@ -777,12 +642,10 @@ tkrs = tkrs[0]
 
 # Draw('SMH','2023-01-01')
 
-import os
 for g in os.listdir(r"F:/illiq/"):
     os.remove(r"F:/illiq/"+g)
 
 
-import multiprocess as mp
 with mp.Pool(15) as pool:
     pool.map(Draw, tkrs, chunksize=1)
     pool.close() 
